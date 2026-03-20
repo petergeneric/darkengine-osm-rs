@@ -1,19 +1,23 @@
 use std::ffi::c_void;
+use std::sync::OnceLock;
 
 use windows::Win32::System::Com::IMalloc;
 
-static mut MALLOC: Option<&IMalloc> = None;
+use crate::UnsafeSendSync;
+
+static MALLOC: OnceLock<UnsafeSendSync<IMalloc>> = OnceLock::new();
 
 fn malloc() -> &'static IMalloc {
-    unsafe { MALLOC.expect("Malloc hasn't been initialised.") }
+    &MALLOC.get().expect("Malloc hasn't been initialised.").0
 }
 
 pub(crate) fn init(malloc: IMalloc) {
-    unsafe { MALLOC = Some(Box::leak(Box::new(malloc))) };
+    MALLOC.set(UnsafeSendSync(malloc)).ok();
 }
 
-pub(crate) unsafe fn alloc(size: usize) {
-    unsafe { malloc().Alloc(size) };
+#[allow(dead_code)]
+pub(crate) unsafe fn alloc(size: usize) -> *mut c_void {
+    unsafe { malloc().Alloc(size) }
 }
 
 /// # Safety

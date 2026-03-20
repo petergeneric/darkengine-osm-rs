@@ -1,3 +1,5 @@
 [build]
 target = "i686-pc-windows-gnu"
-rustflags = "-C link-arg=exports.def"
+
+[target.i686-pc-windows-gnu]
+linker = "i686-w64-mingw32-gcc"

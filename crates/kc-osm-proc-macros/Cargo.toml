@@ -2,7 +2,7 @@
 name = "kc-osm-proc-macros"
 version = "0.0.1"
 edition = "2024"
-authors = ["Jarrod Doyle <thejarroddoyle@gmail.com>"]
+authors = ["Jarrod Doyle <thejarroddoyle@gmail.com>", "Peter Wright <code@peter.works>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/JarrodDoyle/osm-rs"
 description = "The dark_script macro for the kc-osm crate"
@@ -11,6 +11,7 @@ description = "The dark_script macro for the kc-osm crate"
 proc-macro = true
 
 [dependencies]
+dark-engine-service-types = { version = "0.0.1", path = "../service-types" }
 heck = "0.5.0"
 proc-macro2 = "1.0.101"
 quote = "1.0.41"

@@ -1,0 +1,30 @@
+DML1
+
+// Keyring: auto-select key/pick when frobbing locked objects.
+// Uses metaproperties to safely add scripts without clashing with other mods/FMs.
+// If J4FKeyring mod is installed, our keyring scripts yield to it at runtime.
+
+#script "keyring"
+
+CreateArch "MetaProperty" "XCHANGEX_KeyringTarget"
+{
+}
++ObjProp "XCHANGEX_KeyringTarget" "Scripts"
+{
+	"Script 0" KeyringTarget
+	"Don't Inherit" FALSE
+}
++MetaProp "Door" "XCHANGEX_KeyringTarget"
++MetaProp "Locks" "XCHANGEX_KeyringTarget"
++MetaProp "Container" "XCHANGEX_KeyringTarget"
+
+CreateArch "MetaProperty" "XCHANGEX_KeyringSource"
+{
+}
++ObjProp "XCHANGEX_KeyringSource" "Scripts"
+{
+	"Script 0" KeyringSource
+	"Don't Inherit" FALSE
+}
++MetaProp "Lockpick" "XCHANGEX_KeyringSource"
++MetaProp "Key" "XCHANGEX_KeyringSource"
