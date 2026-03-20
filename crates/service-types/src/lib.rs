@@ -41,6 +41,7 @@ script_services! {
     Camera        = 0x140,
     Physics       = 0x141,
     DrkInv        = 0x150,
+    Inventory     = 0x15E,
     Quest         = 0x152,
     DrkPowerups   = 0x153,
     PlayerLimbs   = 0x15D,

@@ -28,20 +28,19 @@ use std::{
     ptr::null,
 };
 
-/// Type discriminant for [`sMultiParm`].
+/// Type discriminant for [`sMultiParm`] (`eMultiParmType` in the engine SDK).
 ///
 /// The engine uses `t = 0` (undef) and `t = 1` (int) interchangeably for integer
-/// values (e.g. HitPoints returns t=1), and `t = 2` for strings. Both 0 and 1 are
-/// treated as Int.
-// TODO: add Float(2), String(3), Vector(4) variants and handle the t=0 vs t=1
-// ambiguity properly.
+/// values (e.g. HitPoints returns t=1). Both 0 and 1 are treated as Int.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MultiParmType {
     /// Untyped / integer — the engine uses 0 for integers.
     Int = 0,
-    /// String — the engine uses 2 for string values from property Get.
-    String = 2,
+    /// Float value (`kMT_Float`).
+    Float = 2,
+    /// String — pointer to a null-terminated C string (`kMT_String`).
+    String = 3,
     /// Object reference (same representation as integer).
     Object = 5,
 }
@@ -52,7 +51,8 @@ impl MultiParmType {
     pub fn from_raw(t: c_int) -> Option<Self> {
         match t {
             0 => Some(Self::Int),
-            2 => Some(Self::String),
+            2 => Some(Self::Float),
+            3 => Some(Self::String),
             5 => Some(Self::Object),
             _ => None,
         }
@@ -67,6 +67,8 @@ impl MultiParmType {
 pub enum MultiParm {
     /// Untyped / integer value (`t = 0`).
     Int(i32),
+    /// Float value (`t = 2`, `kMT_Float`).
+    Float(f32),
     /// Owned string value. Copied from the engine's allocated buffer.
     String(CString),
     /// Object reference (same as integer, but semantically an object ID).
@@ -92,19 +94,15 @@ impl MultiParm {
         match parm.t {
             // 0 = undef, 1 = int — both treated as integer
             0 | 1 => MultiParm::Int(parm.val),
-            2 => {
-                // String: val is a pointer to a C string.
-                // Validate pointer range before dereferencing — the SDK header declares
-                // The engine also uses t=2 for floats, so a float value could arrive with t=2 and val containing
-                // float bits rather than a valid pointer.
-                let ptr = parm.val as u32;
+            // kMT_Float: reinterpret the i32 bits as f32
+            2 => MultiParm::Float(f32::from_bits(parm.val as u32)),
+            // kMT_String: val is a pointer to a null-terminated C string
+            3 => {
                 if parm.val == 0 {
                     MultiParm::String(CString::default())
-                } else if ptr >= 0x10000 && ptr < 0x80000000 {
+                } else {
                     let cstr = unsafe { CStr::from_ptr(parm.val as *const c_char) };
                     MultiParm::String(CString::from(cstr))
-                } else {
-                    MultiParm::Undefined { t: parm.t, val: parm.val }
                 }
             }
             5 => MultiParm::Object(ObjectId(parm.val)),
@@ -123,6 +121,10 @@ impl MultiParm {
             MultiParm::Int(v) => sMultiParm {
                 val: v,
                 t: MultiParmType::Int as c_int,
+            },
+            MultiParm::Float(f) => sMultiParm {
+                val: f.to_bits() as c_int,
+                t: MultiParmType::Float as c_int,
             },
             MultiParm::String(s) => sMultiParm {
                 val: s.into_raw() as c_int,

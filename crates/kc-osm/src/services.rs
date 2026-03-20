@@ -143,6 +143,7 @@ pub struct Services {
     pub container: Option<ContainerService>,
     pub dark_overlay: Option<DarkOverlayService>,
     pub dark_ui: Option<DarkUIService>,
+    pub data: Option<DataService>,
     pub debug: DebugService,
     pub engine: EngineService,
     pub key: Option<KeyService>,
@@ -153,6 +154,8 @@ pub struct Services {
     pub version: VersionService,
     pub weapon: Option<WeaponService>,
     pub damage: Option<DamageService>,
+    pub dark_game: Option<DarkGameService>,
+    pub inventory: Option<InventoryService>,
 }
 
 pub fn services() -> &'static Services {
@@ -168,6 +171,7 @@ pub(crate) fn services_init(script_manager: IScriptMan) {
         container: try_get_service(&script_manager).map(|s| ContainerService { service: s }),
         dark_overlay: try_get_service(&script_manager).map(|s| DarkOverlayService { service: s }),
         dark_ui: try_get_service(&script_manager).map(|s| DarkUIService { service: s }),
+        data: try_get_service(&script_manager).map(|s| DataService { service: s }),
         debug: DebugService {
             service: get_service(&script_manager),
         },
@@ -184,6 +188,10 @@ pub(crate) fn services_init(script_manager: IScriptMan) {
         },
         weapon: try_get_service(&script_manager).map(|s| WeaponService { service: s }),
         damage: try_get_service(&script_manager).map(|s| DamageService { service: s }),
+        dark_game: try_get_service(&script_manager).map(|s| DarkGameService { service: s }),
+        // IInventory is not in the script service table; acquired via QI on
+        // IScriptMan, which delegates to the app aggregate through COM aggregation.
+        inventory: try_qi_service(&script_manager).map(|s| InventoryService { service: s }),
     };
     let _ = SERVICES.set(UnsafeSendSync(services));
 }
@@ -194,6 +202,12 @@ fn get_service<T: Interface>(script_manager: &IScriptMan) -> T {
 
 fn try_get_service<T: Interface>(script_manager: &IScriptMan) -> Option<T> {
     unsafe { script_manager.GetService(&T::IID).cast::<T>().ok() }
+}
+
+/// Acquire a COM interface via QueryInterface on the script manager directly.
+/// Some interfaces are only reachable this way (not registered in the service table).
+fn try_qi_service<T: Interface>(script_manager: &IScriptMan) -> Option<T> {
+    script_manager.cast::<T>().ok()
 }
 
 // Vtable layout matches T1.
@@ -911,7 +925,7 @@ impl Alpha {
     pub const OPAQUE: Self = Self(255);
 }
 
-/// An RGB color value. Each component is 0–255.
+/// An RGB color value
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgb {
     pub r: u8,
@@ -1251,6 +1265,7 @@ impl DarkUIService {
     }
 
     /// Returns the currently selected inventory weapon, or `None` if nothing is selected.
+    /// Will never return ObjectId(0)
     /// See `darkui.h` — `InvWeapon`.
     #[must_use]
     pub fn inv_weapon(&self) -> Option<ObjectId> {
@@ -1260,6 +1275,7 @@ impl DarkUIService {
     }
 
     /// Selects an inventory object (weapon or item) by its object ID.
+    /// N.B. no-op if passed ObjectId(0), you need to call InventoryService.inv_clear
     /// See `darkui.h` — `InvSelect`.
     pub fn inv_select(&self, obj: ObjectId) -> Result<()> {
         unsafe { self.service.InvSelect(obj.0) }.ok()
@@ -1276,6 +1292,7 @@ impl DarkUIService {
     }
 
     /// Returns the human-readable key binding string for a command,
+    /// for help/tutorial overlay
     /// or `None` if the command is not bound.
     /// See `darkui.h` — `DescribeKeyBinding`.
     #[must_use]
@@ -1889,6 +1906,16 @@ impl PropertyService {
         .ok()
     }
 
+    /// Get the inventory type of an object from its `InvType` property.
+    #[must_use]
+    pub fn get_inv_type(&self, obj: ObjectId) -> Option<InventoryType> {
+        let val = match self.get(obj, "InvType", None)? {
+            MultiParm::Int(v) => v,
+            _ => return None,
+        };
+        InventoryType::try_from(val).ok()
+    }
+
     /// Copy a property from one object to another. T1 slot [10], T2 slot [11].
     pub fn copy_from(&self, dst: ObjectId, prop: &str, src: ObjectId) -> Result<()> {
         let prop = CString::new(prop).unwrap();
@@ -2005,6 +2032,32 @@ impl WeaponService {
     }
 }
 
+// ---- Inventory Type (eInventoryType) ----
+
+/// Dark Engine inventory type, from the `InvType` property.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryType {
+    /// Not a real inventory item (carried objects, bodies, loot).
+    Junk = 0,
+    /// Usable inventory item (keys, potions, tools, etc.).
+    Item = 1,
+    /// Weapon (sword, blackjack, bow).
+    Weapon = 2,
+}
+
+impl TryFrom<i32> for InventoryType {
+    type Error = i32;
+    fn try_from(v: i32) -> std::result::Result<Self, i32> {
+        match v {
+            0 => Ok(Self::Junk),
+            1 => Ok(Self::Item),
+            2 => Ok(Self::Weapon),
+            _ => Err(v),
+        }
+    }
+}
+
 // ---- Container Service (0x17d) ----
 
 /// Containment type returned by `ContainerService::is_held`.
@@ -2071,6 +2124,62 @@ impl ContainerService {
     }
 }
 
+// ---- INTERNAL Inventory Service (0x15e) ----
+// This is an internal engine service, not a scripting service,
+// so it needs to be fetched with `try_qi_service`
+//
+// N.B. more methods, didn't map anything over than inv_clear
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhichInvObj {
+    CurrentWeapon = 0,
+    CurrentItem = 1,
+}
+
+#[dark_engine_service(Inventory)]
+unsafe trait IInventoryService: IUnknown {
+    fn Init(&self);
+    fn End(&self);
+}
+
+pub struct InventoryService {
+    service: IInventoryService,
+}
+
+impl InventoryService {
+    fn raw_this(&self) -> *mut c_void {
+        self.service.as_raw()
+    }
+
+    /// Immediately clear the current weapon/item selection.
+    /// Vtable slot 8: HRESULT InvClear(eWhichInvObj)
+    pub fn inv_clear(&self, which: WhichInvObj) {
+        let _ = vtable_dispatch!(
+            self,
+            null_fallback: (),
+            slots: { T1: 8, T2: 8 },
+            fn(c_int) -> HRESULT,
+            which as c_int
+        );
+    }
+}
+
+// ---- DarkGame Service (0x1b4) ----
+// Minimal definition — only needed for GUID generation via #[dark_engine_service].
+// All actual calls use raw vtable dispatch.
+
+#[dark_engine_service(DarkGame)]
+unsafe trait IDarkGameService: IUnknown {
+    fn Init(&self);
+    fn End(&self);
+}
+
+pub struct DarkGameService {
+    #[allow(dead_code)] // retained for future vtable dispatch methods
+    service: IDarkGameService,
+}
+
 // ---- Damage Service (0xfe) ----
 // Vtable: [3] Init, [4] End, [5] Damage, [6] Slay, [7] Resurrect, [8] Terminate
 // TODO: verify Resurrect vtable slot on T1.
@@ -2104,5 +2213,43 @@ impl DamageService {
     /// Kill an object.
     pub fn slay(&self, victim: ObjectId, culprit: ObjectId) -> Result<()> {
         unsafe { self.service.Slay(victim.0, culprit.0) }.ok()
+    }
+}
+
+// ---- Data Service (0x1a0) ----
+// Vtable: [3] Init, [4] End, [5] GetString, [6] GetObjString, [7] DirectRand,
+//         [8] RandInt, [9] RandFlt0to1, [10] RandFltNeg1to1
+
+#[dark_engine_service(Data)]
+unsafe trait IDataService: IUnknown {
+    fn Init(&self);
+    fn End(&self);
+    // [5] GetString — aggregate return (string), hidden retval_ptr
+    fn GetString(&self, retval: *mut *const c_char, table: *const c_char, name: *const c_char, def: *const c_char, relpath: *const c_char) -> *mut *const c_char;
+    // [6] GetObjString — aggregate return (string), hidden retval_ptr
+    fn GetObjString(&self, retval: *mut *const c_char, obj: c_int, table: *const c_char) -> *mut *const c_char;
+}
+
+pub struct DataService {
+    service: IDataService,
+}
+
+impl DataService {
+    /// Look up a localized string for an object from a named string table.
+    ///
+    /// For example, `get_obj_string(obj, "objnames")` resolves the object's `GameName`
+    /// property (e.g. `name_compass`) through the `objnames.str` string table to produce
+    /// the display name (e.g. `"Compass"`).
+    #[must_use]
+    pub fn get_obj_string(&self, obj: ObjectId, table: &str) -> Option<String> {
+        let table = CString::new(table).ok()?;
+        let mut result: *const c_char = null();
+        unsafe { self.service.GetObjString(&mut result, obj.0, table.as_ptr()) };
+        if result.is_null() {
+            return None;
+        }
+        let s = unsafe { CStr::from_ptr(result).to_string_lossy().into_owned() };
+        unsafe { crate::malloc::free(result as *mut c_void) };
+        if s.is_empty() { None } else { Some(s) }
     }
 }
