@@ -429,11 +429,11 @@ impl DebugService {
         }
     }
 
-    pub fn command(&self, cmd: &str) {
+    pub fn command(&self, cmd: &str) -> HRESULT {
         let s1 = CString::new(cmd).unwrap();
         let s = CString::from(c"");
         unsafe {
-            let _ = self.service.Command(
+            self.service.Command(
                 &mut s1.as_ptr(),
                 &mut s.as_ptr(),
                 &mut s.as_ptr(),
@@ -442,7 +442,7 @@ impl DebugService {
                 &mut s.as_ptr(),
                 &mut s.as_ptr(),
                 &mut s.as_ptr(),
-            );
+            )
         }
     }
 
