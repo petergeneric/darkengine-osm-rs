@@ -1,4 +1,8 @@
 #![allow(non_snake_case)]
+// FFI vtable signatures must match the engine — can't reduce argument counts
+#![allow(clippy::too_many_arguments)]
+// Macro-generated null_fallback: () is intentional for void-returning wrappers
+#![allow(clippy::unused_unit)]
 
 mod malloc;
 mod services;
