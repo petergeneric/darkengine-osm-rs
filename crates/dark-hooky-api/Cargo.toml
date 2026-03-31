@@ -1,0 +1,10 @@
+[package]
+name = "dark-hooky-api"
+version = "0.0.1"
+edition = "2024"
+authors = ["Peter Wright <code@peter.works>"]
+license = "MIT OR Apache-2.0"
+description = "API types and Bundle trait for the DarkHooky plugin system"
+
+[dependencies]
+uuid = { version = "1", features = ["macro-diagnostics"] }
