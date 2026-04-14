@@ -107,6 +107,17 @@ impl Api {
         }
     }
 
+    /// Register a D3D9 Present callback. Fires once per presented frame.
+    /// Lower `priority` values run first.
+    ///
+    /// # Safety
+    /// `cb` and `user_data` must remain valid for the process lifetime.
+    pub unsafe fn request_d3d9_present(&self, cb: ffi::PresentCallbackFn, user_data: *mut c_void, priority: i32) {
+        if let Some(f) = self.api().request_d3d9_present {
+            unsafe { f(cb, user_data, priority) };
+        }
+    }
+
     /// Get the current D3D9 device pointer, or null if not yet available.
     pub fn d3d9_device(&self) -> *mut c_void {
         match self.api().request_d3d9_device {

@@ -68,6 +68,22 @@ pub mod ffi;
 pub use api::{Api, Bundle, BundleContext, BundleEntry, BundleInfo};
 pub use ffi::{HookResult, StandardNamedPointers};
 
+/// Provides a stub for `_Unwind_Resume` needed when targeting `i686-pc-windows-gnu`.
+///
+/// Rust's pre-built std for the `-gnu` target emits `_Unwind_Resume` references even
+/// with `panic = "abort"`. Call this macro once in your cdylib crate's `lib.rs`.
+/// On `-msvc` targets this is a no-op.
+#[macro_export]
+macro_rules! unwind_resume_stub {
+    () => {
+        #[cfg(target_env = "gnu")]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn _Unwind_Resume() -> ! {
+            unsafe { core::hint::unreachable_unchecked() }
+        }
+    };
+}
+
 /// Generate the DLL exports required for a DarkHooky bundle.
 ///
 /// Call this once at the top level of your crate, passing the type that implements [`Bundle`]:

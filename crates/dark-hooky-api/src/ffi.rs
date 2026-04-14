@@ -7,7 +7,7 @@
 use std::ffi::{c_char, c_void};
 
 /// Current API version. Incremented when new fields are added to [`DarkHookyApi`].
-pub const CURRENT_API_VERSION: u32 = 3;
+pub const CURRENT_API_VERSION: u32 = 4;
 
 // ============================================================================
 // Result codes
@@ -111,6 +111,9 @@ pub struct HookyBundleEntry {
 /// D3D9 EndScene callback — called on the render thread, ordered by priority.
 pub type EndSceneCallbackFn = unsafe extern "system" fn(user_data: *mut c_void, device: *mut c_void);
 
+/// D3D9 Present callback — called once per presented frame, ordered by priority.
+pub type PresentCallbackFn = unsafe extern "system" fn(user_data: *mut c_void, device: *mut c_void);
+
 /// XInput pre-processing callback.
 /// Return 0 to continue normal processing, non-zero to suppress default handling.
 pub type XInputCallbackFn = unsafe extern "system" fn(user_data: *mut c_void, buttons: *mut u16, lt: *mut u8, rt: *mut u8, lx: *mut i16, ly: *mut i16, rx: *mut i16, ry: *mut i16) -> i32;
@@ -209,4 +212,9 @@ pub struct DarkHookyApi {
     /// Returns 1 on success (writing fn_addr and aggregate_addr to the out pointers),
     /// or 0 if the signature was not found.
     pub find_com_query_interface: Option<unsafe extern "system" fn(fn_addr: *mut u32, aggregate_addr: *mut u32) -> i32>,
+
+    // --- API v4 fields ---
+    /// Register a D3D9 Present callback. Fires once per presented frame (after all
+    /// EndScene calls). Lower `priority` values run first.
+    pub request_d3d9_present: Option<unsafe extern "system" fn(cb: PresentCallbackFn, user_data: *mut c_void, priority: i32)>,
 }
