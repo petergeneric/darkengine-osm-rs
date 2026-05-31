@@ -7,7 +7,7 @@
 use std::ffi::{c_char, c_void};
 
 /// Current API version. Incremented when new fields are added to [`DarkHookyApi`].
-pub const CURRENT_API_VERSION: u32 = 4;
+pub const CURRENT_API_VERSION: u32 = 5;
 
 // ============================================================================
 // Result codes
@@ -217,4 +217,14 @@ pub struct DarkHookyApi {
     /// Register a D3D9 Present callback. Fires once per presented frame (after all
     /// EndScene calls). Lower `priority` values run first.
     pub request_d3d9_present: Option<unsafe extern "system" fn(cb: PresentCallbackFn, user_data: *mut c_void, priority: i32)>,
+
+    // --- API v5 fields ---
+    /// Report whether `d3d9!Present`'s prologue was already a relative `JMP`
+    /// when the host installed its inline detour — i.e. whether another D3D9
+    /// wrapper or overlay (dgVoodoo2, DXVK, ReShade, etc.) had already
+    /// hooked it. Returns `1` if pre-hooked, `0` if not, `-1` if the host
+    /// has not yet installed the Present detour (called too early, or the
+    /// install failed). Bundles use this to decide whether to drive their
+    /// per-frame work from EndScene (pre-hook conflict) or Present (clean).
+    pub d3d9_present_prologue_is_jmp: Option<unsafe extern "system" fn() -> i32>,
 }

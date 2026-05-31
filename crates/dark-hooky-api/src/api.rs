@@ -243,6 +243,25 @@ impl Api {
         if ok != 0 { Some((fn_addr, aggregate_addr)) } else { None }
     }
 
+    /// Whether `d3d9!Present`'s prologue was already a relative `JMP` when
+    /// the host installed its detour — the fingerprint of a pre-existing
+    /// hook from a D3D9 wrapper (dgVoodoo2, DXVK) or overlay (ReShade).
+    ///
+    /// Returns `Some(true)` if pre-hooked, `Some(false)` if clean, and
+    /// `None` when the answer is unavailable — either the host predates
+    /// API v5 and doesn't expose this query, or it does but hasn't
+    /// installed the Present detour yet (queried too early in startup, or
+    /// the install failed). The first frame callback is the earliest
+    /// reliable point to query this.
+    pub fn d3d9_present_prologue_is_jmp(&self) -> Option<bool> {
+        let f = self.api().d3d9_present_prologue_is_jmp?;
+        match unsafe { f() } {
+            1 => Some(true),
+            0 => Some(false),
+            _ => None,
+        }
+    }
+
     /// Register a message handler (raw FFI). Must be called during the Start phase only.
     ///
     /// The [`export_bundle!`](crate::export_bundle) macro handles this automatically.
