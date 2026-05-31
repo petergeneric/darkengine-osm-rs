@@ -156,6 +156,8 @@ pub struct Services {
     pub damage: Option<DamageService>,
     pub dark_game: Option<DarkGameService>,
     pub inventory: Option<InventoryService>,
+    pub physics: Option<PhysicsService>,
+    pub sound: Option<SoundService>,
 }
 
 pub fn services() -> &'static Services {
@@ -192,6 +194,8 @@ pub(crate) fn services_init(script_manager: IScriptMan) {
         // IInventory is not in the script service table; acquired via QI on
         // IScriptMan, which delegates to the app aggregate through COM aggregation.
         inventory: try_qi_service(&script_manager).map(|s| InventoryService { service: s }),
+        physics: try_get_service(&script_manager).map(|s| PhysicsService { service: s }),
+        sound: try_get_service(&script_manager).map(|s| SoundService { service: s }),
     };
     let _ = SERVICES.set(UnsafeSendSync(services));
 }
@@ -2216,6 +2220,31 @@ impl DamageService {
     }
 }
 
+// ---- Physics Service (0x141) ----
+// Vtable: [3] Init, [4] End, [5] SubscribeMsg, [6] UnsubscribeMsg, ...
+
+#[dark_engine_service(Physics)]
+unsafe trait IPhysicsService: IUnknown {
+    fn Init(&self);
+    fn End(&self);
+    fn SubscribeMsg(&self, phys_obj: c_int, message_types: c_int) -> HRESULT;
+    fn UnsubscribeMsg(&self, phys_obj: c_int, message_types: c_int) -> HRESULT;
+}
+
+pub struct PhysicsService {
+    service: IPhysicsService,
+}
+
+impl PhysicsService {
+    pub fn subscribe_msg(&self, obj: ObjectId, message_types: i32) -> Result<()> {
+        unsafe { self.service.SubscribeMsg(obj.0, message_types) }.ok()
+    }
+
+    pub fn unsubscribe_msg(&self, obj: ObjectId, message_types: i32) -> Result<()> {
+        unsafe { self.service.UnsubscribeMsg(obj.0, message_types) }.ok()
+    }
+}
+
 // ---- Data Service (0x1a0) ----
 // Vtable: [3] Init, [4] End, [5] GetString, [6] GetObjString, [7] DirectRand,
 //         [8] RandInt, [9] RandFlt0to1, [10] RandFltNeg1to1
@@ -2251,5 +2280,93 @@ impl DataService {
         let s = unsafe { CStr::from_ptr(result).to_string_lossy().into_owned() };
         unsafe { crate::malloc::free(result as *mut c_void) };
         if s.is_empty() { None } else { Some(s) }
+    }
+}
+
+// ---- Sound Service (0x0f1) ----
+// Minimal definition — only needed for GUID generation via #[dark_engine_service].
+// All calls use raw vtable dispatch: T2 appends an extra eSoundNetwork param to the
+// Play* methods (SCR_SOUND_NETWORK macro) at the same slot, so the __stdcall param
+// count differs per game and the windows interface trait can't model both signatures.
+//
+// Method params follow the aggregate-return ABI seen elsewhere in this file: the BOOL
+// result comes back through a hidden first pointer arg, and string params are passed by
+// reference (`const char* &` = `*const *const c_char`).
+
+#[dark_engine_service(Sound)]
+unsafe trait ISoundService: IUnknown {
+    fn Init(&self);
+    fn End(&self);
+}
+
+pub struct SoundService {
+    service: ISoundService,
+}
+
+impl SoundService {
+    fn raw_this(&self) -> *mut c_void {
+        self.service.as_raw()
+    }
+
+    /// Play a named sound as ambient (non-positional, 2D).
+    pub fn play_ambient(&self, callback_obj: ObjectId, sound_name: &str) -> bool {
+        let Ok(name) = CString::new(sound_name) else { return false };
+        let name_ptr = name.as_ptr();
+        let mut result: c_int = 0;
+
+        // Slot 8 = PlayAmbient; T2 takes a trailing eSoundNetwork param, T1 does not.
+        match game_version() {
+            GameVersion::T1 => {
+                vtable_dispatch!(
+                    self,
+                    null_fallback: false,
+                    slots: { T1: 8, T2: 8 },
+                    fn(*mut c_int, c_int, *const *const c_char, c_int) -> *mut c_int,
+                    &mut result, callback_obj.0, &name_ptr, 0
+                );
+            }
+            GameVersion::T2 => {
+                vtable_dispatch!(
+                    self,
+                    null_fallback: false,
+                    slots: { T1: 8, T2: 8 },
+                    fn(*mut c_int, c_int, *const *const c_char, c_int, c_int) -> *mut c_int,
+                    &mut result, callback_obj.0, &name_ptr, 0, 0
+                );
+            }
+            GameVersion::SS2 => return false,
+        }
+        result != 0
+    }
+
+    /// Play a named sound at an object's position (3D positional).
+    pub fn play_at_object(&self, callback_obj: ObjectId, sound_name: &str, target_obj: ObjectId) -> bool {
+        let Ok(name) = CString::new(sound_name) else { return false };
+        let name_ptr = name.as_ptr();
+        let mut result: c_int = 0;
+
+        // Slot 6 = PlayAtObject; T2 takes a trailing eSoundNetwork param, T1 does not.
+        match game_version() {
+            GameVersion::T1 => {
+                vtable_dispatch!(
+                    self,
+                    null_fallback: false,
+                    slots: { T1: 6, T2: 6 },
+                    fn(*mut c_int, c_int, *const *const c_char, c_int, c_int) -> *mut c_int,
+                    &mut result, callback_obj.0, &name_ptr, target_obj.0, 0
+                );
+            }
+            GameVersion::T2 => {
+                vtable_dispatch!(
+                    self,
+                    null_fallback: false,
+                    slots: { T1: 6, T2: 6 },
+                    fn(*mut c_int, c_int, *const *const c_char, c_int, c_int, c_int) -> *mut c_int,
+                    &mut result, callback_obj.0, &name_ptr, target_obj.0, 0, 0
+                );
+            }
+            GameVersion::SS2 => return false,
+        }
+        result != 0
     }
 }
