@@ -69,8 +69,9 @@ pub fn dark_script(attr: TokenStream, item: TokenStream) -> TokenStream {
     let messages = parse_macro_input!(attr with Punctuated::<Meta, syn::Token![,]>::parse_terminated);
 
     let mut match_arms = TokenStream2::default();
-    for msg in messages {
+    for msg in &messages {
         let message = msg.to_token_stream().to_string();
+
         let message_func = Ident::new(&format!("on_{}", message.to_snake_case()), Span::call_site());
         let msg_type = msg_type_for(&message);
 
@@ -89,7 +90,6 @@ pub fn dark_script(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let item = parse_macro_input!(item as ItemStruct);
-
     let name = &item.ident;
     let script_name = name.to_string();
     let script_name_bytes = proc_macro2::Literal::byte_string(format!("{}\0", script_name).as_bytes());
