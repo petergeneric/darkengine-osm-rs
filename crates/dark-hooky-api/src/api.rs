@@ -205,6 +205,8 @@ impl Api {
     /// `ptr` must point to valid data that remains valid for the process lifetime.
     pub unsafe fn register_named_pointer(&self, guid: &ffi::NamedPointerGuid, ptr: *mut c_void) {
         if let Some(f) = self.api().register_named_pointer {
+            // SAFETY: `f` is the host's callback; `ptr` validity is the caller's
+            // contract (see `# Safety` above).
             unsafe { f(guid as *const ffi::NamedPointerGuid, ptr) };
         }
     }

@@ -6,8 +6,48 @@
 
 use std::ffi::{c_char, c_void};
 
-/// Current API version. Incremented when new fields are added to [`DarkHookyApi`].
-pub const CURRENT_API_VERSION: u32 = 5;
+/// Major API version; governs host↔bundle compatibility. Bumped when fields are
+/// added to [`DarkHookyApi`]. Parsed from the `major.minor.revision` in
+/// `api_version.txt` (via `include_str!`, so edits rebuild the crate).
+pub const CURRENT_API_VERSION: u32 = parse_major(include_str!("../api_version.txt"));
+
+/// Full `major.minor.revision` version string from `api_version.txt` (e.g.
+/// `"6.0.0"`), whitespace-trimmed. Lets consumers check an exact release rather
+/// than just the major. Generally speaking only major versions should be compared.
+pub const CURRENT_API_VERSION_STR: &str = trim_ascii(include_str!("../api_version.txt"));
+
+/// Const-context `str::trim` (not const in std); strips the source file's
+/// trailing newline from the compiled-in version string.
+const fn trim_ascii(s: &str) -> &str {
+    let mut bytes = s.as_bytes();
+    while let [first, rest @ ..] = bytes {
+        if first.is_ascii_whitespace() {
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+    while let [rest @ .., last] = bytes {
+        if last.is_ascii_whitespace() {
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+    unsafe { std::str::from_utf8_unchecked(bytes) }
+}
+
+/// Parses the leading major component (digits before the first non-digit).
+const fn parse_major(s: &str) -> u32 {
+    let bytes = s.as_bytes();
+    let mut value = 0u32;
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        value = value * 10 + (bytes[i] - b'0') as u32;
+        i += 1;
+    }
+    value
+}
 
 // ============================================================================
 // Result codes
@@ -134,13 +174,48 @@ pub struct HookyGuid {
 /// A 16-byte binary GUID used as a key for named pointers.
 pub type NamedPointerGuid = [u8; 16];
 
+// ============================================================================
+// DLL export signatures
+// ============================================================================
+//
+// Signatures of the functions the host exports from `dinput.dll` and consumers
+// (e.g. the OSM) resolve via `GetProcAddress` + `transmute`. Defined once so the
+// host can statically assert its exports match (the `const _: ... = ...` checks
+// beside each export) and consumers transmute to the shared type — a signature
+// change then fails to compile on both sides instead of silently miscompiling.
+
+/// Signature of the `DarkHookyGetApi` export.
+///
+/// Returns a pointer to the [`DarkHookyApi`] struct (never null in practice;
+/// treat null defensively).
+pub type DarkHookyGetApiFn = unsafe extern "system" fn() -> *const DarkHookyApi;
+
+/// Signature of the `DarkHookyGetVersion` export.
+///
+/// Returns a process-lifetime, null-terminated UTF-8 string with the host's full
+/// `major.minor.revision` version ([`CURRENT_API_VERSION_STR`]).
+/// Consumers can compare it against their own compiled-in [`CURRENT_API_VERSION_STR`]
+/// to detect upgradable installs.
+/// Added in 6.0.0
+pub type DarkHookyGetVersionFn = unsafe extern "system" fn() -> *const c_char;
+
+/// Signature of the `DarkHookyGetNamedPointer` export.
+///
+/// Looks up a named pointer by its 16-byte binary GUID; returns null if none is
+/// registered. The caller casts the result to the concrete pointee type agreed
+/// for that GUID (e.g. `*mut OverlayState` for [`StandardNamedPointers::OverlayState`]).
+pub type DarkHookyGetNamedPointerFn = unsafe extern "system" fn(guid: *const NamedPointerGuid) -> *mut c_void;
+
 /// Standard named pointer GUIDs defined by DarkHooky.
+///
+/// If you would like your mod listed here (primarily to document services exposed to
+/// other hooky mods), please reach out via github issue.
 ///
 /// Each variant provides a binary GUID for use with `register_named_pointer` /
 /// `get_named_pointer`. The string form is shown in comments for readability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StandardNamedPointers {
-    /// Gamepad Mod Overlay state (shared between gamepad Dark Hooky bundle and its OSM)
+    /// (Private, Highly unstable) - Gamepad Mod Overlay state
     OverlayState,
 }
 

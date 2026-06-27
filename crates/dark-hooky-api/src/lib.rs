@@ -66,7 +66,7 @@ mod api;
 pub mod ffi;
 
 pub use api::{Api, Bundle, BundleContext, BundleEntry, BundleInfo};
-pub use ffi::{HookResult, StandardNamedPointers};
+pub use ffi::{CURRENT_API_VERSION_STR, DarkHookyGetApiFn, DarkHookyGetNamedPointerFn, DarkHookyGetVersionFn, HookResult, StandardNamedPointers};
 
 /// Provides a stub for `_Unwind_Resume` needed when targeting `i686-pc-windows-gnu`.
 ///
