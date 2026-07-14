@@ -1624,6 +1624,14 @@ impl ObjectService {
         (result != 0).then_some(ObjectId(result))
     }
 
+    /// Adds a metaproperty to an object. On a concrete (already-spawned) object
+    /// this makes the engine rebuild that object's script list, instantiating any
+    /// scripts the metaproperty carries and firing their `BeginScript` synchronously
+    /// — unlike editing the archetype, which doesn't re-bind already-spawned objects.
+    pub fn add_meta_property(&self, obj: ObjectId, mp: ObjectId) -> Result<()> {
+        unsafe { self.service.AddMetaProperty(obj.0, mp.0) }.ok()
+    }
+
     #[must_use]
     pub fn has_meta_property(&self, obj: ObjectId, mp: ObjectId) -> bool {
         let mut result: c_int = 0;
