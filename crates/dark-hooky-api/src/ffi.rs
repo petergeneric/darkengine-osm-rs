@@ -161,6 +161,28 @@ pub type XInputCallbackFn = unsafe extern "system" fn(user_data: *mut c_void, bu
 /// Per-poll frame tick callback — called on the input poll thread.
 pub type FrameCallbackFn = unsafe extern "system" fn(user_data: *mut c_void, api: *const DarkHookyApi);
 
+/// D3D9 pre-reset callback — fired on the render thread immediately before the
+/// host chains to the real `IDirect3DDevice9::Reset`. The bundle must release
+/// any `D3DPOOL_DEFAULT` resources here or the Reset fails. The host's Reset
+/// detour is shared by every device in the process, so the callback must guard
+/// on `device` being its own current game device before acting. Ordered by
+/// priority (lower first).
+pub type PreResetCallbackFn = unsafe extern "system" fn(user_data: *mut c_void, device: *mut c_void, pp: *mut c_void);
+
+/// D3D9 post-reset callback — fired on the render thread right after the real
+/// Reset returns, carrying its `hresult`. On success (`hresult >= 0`) the device
+/// has been re-created against the new present parameters. Same shared-device
+/// caveat as [`PreResetCallbackFn`]. Ordered by priority (lower first).
+pub type PostResetCallbackFn = unsafe extern "system" fn(user_data: *mut c_void, device: *mut c_void, pp: *mut c_void, hresult: i32);
+
+/// D3D9 device-changed callback — fired when the host captures a *different*
+/// game device pointer than before (first capture passes `old == null`). The
+/// `old` pointer may already be freed and must never be dereferenced; it is
+/// supplied only for identity/logging. This is the adoption path: the bundle
+/// should drop every cached device-tied COM resource and switch its cached
+/// device pointer to `new`. Ordered by priority (lower first).
+pub type DeviceChangedCallbackFn = unsafe extern "system" fn(user_data: *mut c_void, old_device: *mut c_void, new_device: *mut c_void);
+
 /// GUID structure matching Windows layout (16 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -294,12 +316,34 @@ pub struct DarkHookyApi {
     pub request_d3d9_present: Option<unsafe extern "system" fn(cb: PresentCallbackFn, user_data: *mut c_void, priority: i32)>,
 
     // --- API v5 fields ---
-    /// Report whether `d3d9!Present`'s prologue was already a relative `JMP`
-    /// when the host installed its inline detour — i.e. whether another D3D9
-    /// wrapper or overlay (dgVoodoo2, DXVK, ReShade, etc.) had already
-    /// hooked it. Returns `1` if pre-hooked, `0` if not, `-1` if the host
-    /// has not yet installed the Present detour (called too early, or the
-    /// install failed). Bundles use this to decide whether to drive their
-    /// per-frame work from EndScene (pre-hook conflict) or Present (clean).
-    pub d3d9_present_prologue_is_jmp: Option<unsafe extern "system" fn() -> i32>,
+    /// The render hook the host recommends bundles drive per-frame work from in
+    /// `frame_hook = auto`. Returns `0` for Present (the default while Present is
+    /// firing normally), `1` for EndScene (the host observed Present stop firing
+    /// and gave up recovering it, or no Present detour installed), and `-1` while
+    /// undecided (detours not installed yet — called too early).
+    ///
+    /// Renamed in API 6.2 (was `d3d9_present_prologue_is_jmp`, an install-time
+    /// prologue check): the host now trusts Present until it demonstrably stops
+    /// being called at runtime, rather than falling back to EndScene whenever any
+    /// other — even well-behaved, chaining — hook is present at startup. Same ABI
+    /// slot and `1 = use EndScene` polarity, so the value maps unchanged.
+    pub d3d9_render_use_endscene: Option<unsafe extern "system" fn() -> i32>,
+
+    // --- API v6 fields (6.1.0) ---
+    //
+    // The host now owns the whole D3D9 device lifecycle: it detours
+    // `IDirect3DDevice9::Reset` (in addition to EndScene/Present) and dispatches
+    // pre/post-reset and device-changed callbacks to bundles, replacing the
+    // per-bundle Reset vtable patching. New fields are appended (append-only
+    // ABI); accessors gate on `api_size` so a bundle built against 6.1 still runs
+    // on a 6.0 host (the calls silently no-op).
+    /// Register a D3D9 pre-reset callback. Fires before the host chains to the
+    /// real `Reset`. Lower `priority` values run first.
+    pub request_d3d9_pre_reset: Option<unsafe extern "system" fn(cb: PreResetCallbackFn, user_data: *mut c_void, priority: i32)>,
+    /// Register a D3D9 post-reset callback. Fires after the real `Reset` returns,
+    /// with its HRESULT. Lower `priority` values run first.
+    pub request_d3d9_post_reset: Option<unsafe extern "system" fn(cb: PostResetCallbackFn, user_data: *mut c_void, priority: i32)>,
+    /// Register a D3D9 device-changed callback. Fires when the host captures a
+    /// new game device pointer (adoption path). Lower `priority` values run first.
+    pub request_d3d9_device_changed: Option<unsafe extern "system" fn(cb: DeviceChangedCallbackFn, user_data: *mut c_void, priority: i32)>,
 }

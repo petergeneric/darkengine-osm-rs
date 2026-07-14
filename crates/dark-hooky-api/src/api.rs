@@ -39,6 +39,35 @@ impl Api {
         if raw.is_null() { None } else { Some(Self { raw }) }
     }
 
+    /// Discover the host API by loading the proxy DLL (`dinput.dll`) and calling
+    /// its `DarkHookyGetApi` export.
+    ///
+    /// This is for out-of-process consumers — such as a Dark Engine OSM script
+    /// module — that reach the proxy through its DLL exports rather than the
+    /// in-process bundle lifecycle. Bundles never call this: they receive a ready
+    /// [`Api`] in [`Bundle::init`].
+    ///
+    /// Returns `None` if `dinput.dll` cannot be loaded, is not a DarkHooky build
+    /// (the `DarkHookyGetApi` export is absent), or the export returns a null API.
+    /// `dinput.dll` is left loaded (its handle is not released) — the proxy lives
+    /// for the process lifetime regardless.
+    ///
+    /// # Safety
+    /// Must not run while the OS loader lock is held (it calls `LoadLibraryA`).
+    pub unsafe fn discover() -> Option<Self> {
+        use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+        // SAFETY: static, null-terminated C strings.
+        let module = unsafe { LoadLibraryA(c"dinput.dll".as_ptr().cast()) };
+        if module.is_null() {
+            return None;
+        }
+        let proc = unsafe { GetProcAddress(module, c"DarkHookyGetApi".as_ptr().cast()) }?;
+        // SAFETY: `proc` is the proxy's `DarkHookyGetApi` export, whose signature
+        // is `DarkHookyGetApiFn` by the proxy↔consumer contract this crate defines.
+        let get_api: ffi::DarkHookyGetApiFn = unsafe { std::mem::transmute(proc) };
+        unsafe { Self::from_raw(get_api()) }
+    }
+
     /// Returns the underlying raw API pointer.
     pub fn as_raw(&self) -> *const DarkHookyApi {
         self.raw
@@ -47,6 +76,18 @@ impl Api {
     fn api(&self) -> &DarkHookyApi {
         // Safety: from_raw guarantees non-null, and the contract guarantees process lifetime.
         unsafe { &*self.raw }
+    }
+
+    /// Whether a field at byte `offset` within [`DarkHookyApi`] is actually
+    /// present in the struct the host supplied. `DarkHookyApi` is an append-only,
+    /// `cbSize`-style struct: a host built against an older API fills fewer
+    /// trailing fields and reports a smaller `api_size`, so any field whose
+    /// offset is `>= api_size` is not backed by real host memory and must not be
+    /// read. Newer accessors gate on this via `offset_of!`; the older accessors
+    /// (which predate this pattern and only null-check the `Option`) should be
+    /// migrated to it.
+    fn has_field(&self, offset: usize) -> bool {
+        offset < self.api().api_size as usize
     }
 
     /// Returns the API version reported by the host.
@@ -245,22 +286,66 @@ impl Api {
         if ok != 0 { Some((fn_addr, aggregate_addr)) } else { None }
     }
 
-    /// Whether `d3d9!Present`'s prologue was already a relative `JMP` when
-    /// the host installed its detour — the fingerprint of a pre-existing
-    /// hook from a D3D9 wrapper (dgVoodoo2, DXVK) or overlay (ReShade).
+    /// The render hook the host recommends driving per-frame work from in
+    /// `frame_hook = auto`: `Some(true)` = EndScene (the host saw Present stop
+    /// firing and gave up recovering it, or no Present detour installed),
+    /// `Some(false)` = Present (the default while Present fires normally).
     ///
-    /// Returns `Some(true)` if pre-hooked, `Some(false)` if clean, and
-    /// `None` when the answer is unavailable — either the host predates
-    /// API v5 and doesn't expose this query, or it does but hasn't
-    /// installed the Present detour yet (queried too early in startup, or
-    /// the install failed). The first frame callback is the earliest
-    /// reliable point to query this.
-    pub fn d3d9_present_prologue_is_jmp(&self) -> Option<bool> {
-        let f = self.api().d3d9_present_prologue_is_jmp?;
+    /// Returns `None` when the answer is unavailable — either the host predates
+    /// API v5 and doesn't expose this query, or it does but hasn't installed the
+    /// detours yet (queried too early in startup). Unlike the old install-time
+    /// prologue check this replaced, the recommendation can change at runtime
+    /// (Present → EndScene), so bundles in auto mode should read it each frame
+    /// rather than latching a one-shot choice.
+    pub fn d3d9_render_use_endscene(&self) -> Option<bool> {
+        let f = self.api().d3d9_render_use_endscene?;
         match unsafe { f() } {
             1 => Some(true),
             0 => Some(false),
             _ => None,
+        }
+    }
+
+    /// Register a D3D9 pre-reset callback. Fires on the render thread before the
+    /// host chains to the real `Reset`; release `D3DPOOL_DEFAULT` resources here.
+    /// Lower `priority` values run first. No-op on a host too old to expose it.
+    ///
+    /// # Safety
+    /// `cb` and `user_data` must remain valid for the process lifetime.
+    pub unsafe fn request_d3d9_pre_reset(&self, cb: ffi::PreResetCallbackFn, user_data: *mut c_void, priority: i32) {
+        if self.has_field(core::mem::offset_of!(DarkHookyApi, request_d3d9_pre_reset))
+            && let Some(f) = self.api().request_d3d9_pre_reset
+        {
+            unsafe { f(cb, user_data, priority) };
+        }
+    }
+
+    /// Register a D3D9 post-reset callback. Fires on the render thread after the
+    /// real `Reset` returns, with its HRESULT. Lower `priority` values run first.
+    /// No-op on a host too old to expose it.
+    ///
+    /// # Safety
+    /// `cb` and `user_data` must remain valid for the process lifetime.
+    pub unsafe fn request_d3d9_post_reset(&self, cb: ffi::PostResetCallbackFn, user_data: *mut c_void, priority: i32) {
+        if self.has_field(core::mem::offset_of!(DarkHookyApi, request_d3d9_post_reset))
+            && let Some(f) = self.api().request_d3d9_post_reset
+        {
+            unsafe { f(cb, user_data, priority) };
+        }
+    }
+
+    /// Register a D3D9 device-changed callback. Fires when the host captures a
+    /// new game device (adoption path — release device-tied resources and adopt
+    /// the new pointer). Lower `priority` values run first. No-op on a host too
+    /// old to expose it.
+    ///
+    /// # Safety
+    /// `cb` and `user_data` must remain valid for the process lifetime.
+    pub unsafe fn request_d3d9_device_changed(&self, cb: ffi::DeviceChangedCallbackFn, user_data: *mut c_void, priority: i32) {
+        if self.has_field(core::mem::offset_of!(DarkHookyApi, request_d3d9_device_changed))
+            && let Some(f) = self.api().request_d3d9_device_changed
+        {
+            unsafe { f(cb, user_data, priority) };
         }
     }
 

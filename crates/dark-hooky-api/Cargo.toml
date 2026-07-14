@@ -8,3 +8,7 @@ description = "API types and Bundle trait for the DarkHooky plugin system"
 
 [dependencies]
 uuid = { version = "1", features = ["macro-diagnostics"] }
+# For `Api::discover()`: loads the proxy DLL (dinput.dll) and resolves its
+# DarkHookyGetApi export. The crate otherwise has no host-side logic, but the
+# discovery sequence is part of the proxy↔consumer contract this crate defines.
+windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader"] }
